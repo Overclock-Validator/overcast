@@ -4,12 +4,13 @@ use std::os::unix::io::AsRawFd;
 use std::thread;
 use libc;
 use heapless::spsc::Queue;
+use solana_sdk::packet;
 
-const BUFFER_SIZE: usize = 1280;
+const BUFFER_SIZE: usize = packet::PACKET_DATA_SIZE;
 const BATCH_SIZE: usize = 32;
 const QUEUE_CAPACITY: usize = 8 * 1024 * 1024 / BUFFER_SIZE;
 
-static mut PACKET_QUEUE: Queue<[u8; BUFFER_SIZE], QUEUE_CAPACITY> = Queue::new();
+static mut PACKET_QUEUE: Queue<(usize, [u8; BUFFER_SIZE]), QUEUE_CAPACITY> = Queue::new();
 
 pub struct TurbineManager {
     socket: UdpSocket,
@@ -73,7 +74,7 @@ impl TurbineManager {
                     let mut packet = [0u8; BUFFER_SIZE];
                     packet[..packet_len].copy_from_slice(&buffers[i][..packet_len]);
                     // enqueue / yield / spin
-                    while prod.enqueue(packet).is_err() {
+                    while prod.enqueue((packet_len, packet)).is_err() {
                         // spin
                         // std::thread::yield_now();
                     }
@@ -84,8 +85,8 @@ impl TurbineManager {
         let processor_thread = thread::spawn(move || {
             loop {
                 // dequeue / yield / spin
-                if let Some(packet) = cons.dequeue() {
-                    println!("Processing packet of length: {}", packet.len());
+                if let Some((packet_len, packet)) = cons.dequeue() {
+                    println!("Processing packet of length: {}", packet_len);
                 } else {
                     // spin
                     // std::thread::yield_now();
