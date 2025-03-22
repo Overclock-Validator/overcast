@@ -49,7 +49,7 @@ fn main() {
     let my_tvu_addr =  my_contact_info.tvu(Protocol::UDP).unwrap();
     println!("me: {:?}", my_tvu_addr);
 
-    let manager = TurbineManager::new(my_tvu_addr).unwrap();
+    let mut manager = TurbineManager::new(my_tvu_addr).unwrap();
     manager.run(store_send);
 
     let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);

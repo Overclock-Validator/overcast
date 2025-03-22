@@ -1,7 +1,11 @@
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::unix::io::AsRawFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::thread::JoinHandle;
+use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender};
 use libc;
 use heapless::spsc::Queue;
@@ -16,19 +20,31 @@ const BATCH_SIZE: usize = 32;
 
 pub struct TurbineManager {
     socket: UdpSocket,
+    threads: Vec<JoinHandle<()>>,
+    running: Arc<AtomicBool>,
 }
 
 impl TurbineManager {
     pub fn new(addr: SocketAddr) -> io::Result<Self> {
         let socket = UdpSocket::bind(addr)?;
-        Ok(TurbineManager { socket })
+        Ok(TurbineManager {
+            socket,
+            threads: Vec::new(),
+            running: Arc::new(AtomicBool::new(true)),
+        })
     }
 
-    pub fn run(self, storage_sender: Sender<ShredType>) {
+    pub fn run(&mut self, storage_sender: Sender<ShredType>) -> &mut Self {
         let (mut prod, mut cons) = unsafe { PACKET_QUEUE.split() };
+        let socket = self.socket.try_clone().expect("Failed to clone socket");
+        let running = self.running.clone();
+
+        self.running.store(true, Ordering::SeqCst);
+
+        let _ = socket.set_nonblocking(true);
 
         let receiver_thread = thread::spawn(move || {
-            let fd = self.socket.as_raw_fd();
+            let fd = socket.as_raw_fd();
 
             let mut buffers: [[u8; BUFFER_SIZE]; BATCH_SIZE] = [[0; BUFFER_SIZE]; BATCH_SIZE];
             let mut iovecs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
@@ -52,7 +68,12 @@ impl TurbineManager {
                 mmsg_hdrs[i].msg_len = 0;
             }
 
-            loop {
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 100_000_000, // 100ms
+            };
+
+            while running.load(Ordering::SeqCst) {
                 // Call recvmmsg to receive a batch of messages.
                 let ret = unsafe {
                     libc::recvmmsg(
@@ -66,8 +87,14 @@ impl TurbineManager {
 
                 if ret < 0 {
                     let err = io::Error::last_os_error();
-                    eprintln!("recvmmsg error: {}", err);
-                    break;
+                    if err.kind() != io::ErrorKind::WouldBlock {
+                        eprintln!("recvmmsg error: {}", err);
+                    }
+
+                    if !running.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    continue;
                 }
 
                 let num_messages = ret as usize;
@@ -82,22 +109,43 @@ impl TurbineManager {
             }
         });
 
+        let processor_running = self.running.clone();
         let processor_thread = thread::spawn(move || {
-            loop {
+            while processor_running.load(Ordering::SeqCst) {
                 // dequeue / yield / spin
                 if let Some(packet) = cons.dequeue() {
                     if let Err(e) = storage_sender.send(packet) {
                         eprintln!("Error sending to storage: {:?}",e);
                     }
-                    let shred = Shred::new_from_serialized_shred(packet.1[0..packet.0].to_vec()).unwrap();
                 } else {
+                    if !processor_running.load(Ordering::SeqCst) {
+                        break;
+                    }
                     // spin
                     // std::thread::yield_now();
                 }
             }
         });
 
-        receiver_thread.join().expect("Receiver thread panicked");
-        processor_thread.join().expect("Processor thread panicked");
+        self.threads.push(receiver_thread);
+        self.threads.push(processor_thread);
+
+        self
+    }
+
+    pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        println!("Stopping TurbineManager threads...");
+
+        self.running.store(false, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(100));
+
+        while let Some(thread) = self.threads.pop() {
+            if let Err(e) = thread.join() {
+                eprintln!("Error joining thread: {:?}", e);
+            }
+        }
+
+        println!("TurbineManager threads stopped");
+        Ok(())
     }
 }
