@@ -9,6 +9,7 @@ mod gossip;
 mod repair_manager;
 
 use gossip::GossipManager;
+use overcast::turbine_manager::TurbineManager;
 use repair_manager::RepairPeersManager;
 
 pub fn debug_repair_peers(entrypoint: &str, timeout: u64) {
@@ -37,8 +38,13 @@ fn main() {
     let mut repair_manager = RepairPeersManager::new(&gossip_manager);
     repair_manager.start_refresh_thread(10, 300).unwrap();
 
+
     let my_contact_info = gossip_manager.lookup_my_info();
-    println!("me: {:?}", my_contact_info.tvu(Protocol::UDP));
+    let my_tvu_addr =  my_contact_info.tvu(Protocol::UDP).unwrap();
+    println!("me: {:?}", my_tvu_addr);
+
+    let manager = TurbineManager::new(my_tvu_addr).unwrap();
+    manager.run();
 
     let sigint_recv = Arc::new(AtomicBool::new(false));
     flag::register(SIGINT, Arc::clone(&sigint_recv)).expect("Failed to register signal handler");
@@ -51,7 +57,7 @@ fn main() {
     println!("Shutting down...");
 
     repair_manager.stop().unwrap();
-    // Explicit drop because borrow checker
+    // Explicit drop because borrow checker (:
     drop(repair_manager);
     gossip_manager.stop().unwrap();
 }
