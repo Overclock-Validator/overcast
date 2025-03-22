@@ -1,7 +1,7 @@
 use std::{env, process};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration};
+use std::time::{Duration, Instant};
 use solana_gossip::contact_info::Protocol;
 use solana_sdk::pubkey;
 use overcast::repair_peers::RepairPeersManager;
@@ -33,23 +33,19 @@ fn main() {
     manager.start_refresh_thread(10, 300).unwrap();
     std::thread::sleep(Duration::from_secs(60));
     let my_contact_info = manager.lookup_my_info();
-    println!("{:?}", my_contact_info.tvu(Protocol::UDP));
-    let contact_info = manager.lookup_info(&pubkey!("C1ocKDYMCm2ooWptMMnpd5VEB2Nx4UMJgRuYofysyzcA"));
-    println!("{:?}", contact_info.unwrap().tvu(Protocol::UDP));
+    println!("me: {:?}", my_contact_info.tvu(Protocol::UDP));
 
     let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
     flag::register(SIGINT, Arc::clone(&running)).expect("Failed to register Ctrl+C handler");
 
     println!("Press Ctrl+C to exit");
 
-    while r.load(Ordering::Relaxed) {
+    while running.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
     }
 
     println!("Shutting down...");
 
-    // Clean shutdown
     manager.stop().unwrap();
 
 }
