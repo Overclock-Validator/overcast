@@ -27,23 +27,19 @@ fn main() {
 
     let mut manager = RepairPeersManager::new();
 
-    // Initialize gossip
     manager.initialize_gossip(gossip_entrypoint).unwrap();
-    // Start background thread to refresh repair peers
     manager.start_refresh_thread(10, 300).unwrap();
-    std::thread::sleep(Duration::from_secs(60));
-    let my_contact_info = manager.lookup_my_info();
-    println!("me: {:?}", my_contact_info.tvu(Protocol::UDP));
 
-    let running = Arc::new(AtomicBool::new(true));
-    flag::register(SIGINT, Arc::clone(&running)).expect("Failed to register Ctrl+C handler");
+    let sigint_recv = Arc::new(AtomicBool::new(false));
+    flag::register(SIGINT, Arc::clone(&sigint_recv)).expect("Failed to register signal handler");
 
     println!("Press Ctrl+C to exit");
-
-    while running.load(Ordering::Relaxed) {
+    while !sigint_recv.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
     }
-
+    println!("Received Ctrl+C, exiting");
+    let my_contact_info = manager.lookup_my_info();
+    println!("me: {:?}", my_contact_info.tvu(Protocol::UDP));
     println!("Shutting down...");
 
     manager.stop().unwrap();
