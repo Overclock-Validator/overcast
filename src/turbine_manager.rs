@@ -2,16 +2,17 @@ use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::unix::io::AsRawFd;
 use std::thread;
+use crossbeam_channel::{Receiver, Sender};
 use libc;
 use heapless::spsc::Queue;
 use solana_ledger::shred::Shred;
 use solana_sdk::packet;
+use crate::queues::PACKET_QUEUE;
+use crate::types::ShredType;
+
 
 const BUFFER_SIZE: usize = packet::PACKET_DATA_SIZE;
 const BATCH_SIZE: usize = 32;
-const QUEUE_CAPACITY: usize = 8 * 1024 * 1024 / BUFFER_SIZE;
-
-static mut PACKET_QUEUE: Queue<Vec<u8>, QUEUE_CAPACITY> = Queue::new();
 
 pub struct TurbineManager {
     socket: UdpSocket,
@@ -23,7 +24,7 @@ impl TurbineManager {
         Ok(TurbineManager { socket })
     }
 
-    pub fn run(self) {
+    pub fn run(self, storage_sender: Sender<ShredType>) {
         let (mut prod, mut cons) = unsafe { PACKET_QUEUE.split() };
 
         let receiver_thread = thread::spawn(move || {
@@ -73,7 +74,7 @@ impl TurbineManager {
                 for i in 0..num_messages {
                     let packet_len = mmsg_hdrs[i].msg_len as usize;
                     // enqueue / yield / spin
-                    while prod.enqueue(buffers[i][..packet_len].to_vec()).is_err() {
+                    while prod.enqueue((packet_len,buffers[i])).is_err() {
                         // spin
                         // std::thread::yield_now();
                     }
@@ -84,10 +85,11 @@ impl TurbineManager {
         let processor_thread = thread::spawn(move || {
             loop {
                 // dequeue / yield / spin
-                if let Some(packet_vec) = cons.dequeue() {
-                    let shred = Shred::new_from_serialized_shred(packet_vec).unwrap();
-                    println!("Shred | id:{:?}",
-                             shred.id());
+                if let Some(packet) = cons.dequeue() {
+                    if let Err(e) = storage_sender.send(packet) {
+                        eprintln!("Error sending to storage: {:?}",e);
+                    }
+                    let shred = Shred::new_from_serialized_shred(packet.1[0..packet.0].to_vec()).unwrap();
                 } else {
                     // spin
                     // std::thread::yield_now();
