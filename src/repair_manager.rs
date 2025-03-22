@@ -1,112 +1,43 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::num::NonZeroUsize;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
-use solana_gossip::cluster_info::{ClusterInfo, Node, NodeConfig};
+
+use solana_gossip::cluster_info::ClusterInfo;
 use solana_gossip::contact_info::{ContactInfo, Protocol};
-use solana_gossip::gossip_service::{make_gossip_node, GossipService};
-use solana_net_utils::{get_public_ip_addr, PortRange};
-use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
-use solana_sdk::signer::Signer;
-use solana_streamer::socket::SocketAddrSpace;
+
+use crate::gossip::GossipManager;
 
 struct RepairPeerInfo {
     socket_addr: SocketAddr,
     last_seen: SystemTime,
 }
 
-pub struct RepairPeersManager {
+pub struct RepairPeersManager<'a> {
     repair_peers: Arc<Mutex<HashMap<IpAddr, RepairPeerInfo>>>,
     exit: Arc<AtomicBool>,
     refresh_thread: Option<thread::JoinHandle<()>>,
-    gossip_service: Option<GossipService>,
-    cluster_info: Option<Arc<ClusterInfo>>,
+    gossip_manager: &'a GossipManager,
 }
 
-impl RepairPeersManager {
-    pub fn new() -> Self {
+impl<'a> RepairPeersManager<'a> {
+    pub fn new(gossip_manager: &'a GossipManager) -> Self {
         RepairPeersManager {
             repair_peers: Arc::new(Mutex::new(HashMap::new())),
             exit: Arc::new(AtomicBool::new(false)),
             refresh_thread: None,
-            gossip_service: None,
-            cluster_info: None,
+            gossip_manager,
         }
-    }
-
-    pub fn initialize_gossip(&mut self, entrypoint: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let keypair = Arc::new(Keypair::new());
-        let exit = Arc::clone(&self.exit);
-
-        let entrypoint_addrs: Vec<_> = entrypoint.to_socket_addrs().unwrap().collect();
-        let cluster_entrypoints = entrypoint_addrs
-            .iter()
-            .map(ContactInfo::new_gossip_entry_point)
-            .collect::<Vec<_>>();
-
-        let gossip_entry = entrypoint_addrs.first().ok_or("Failed to resolve entrypoint")?;
-
-        let my_ip = get_public_ip_addr(gossip_entry).map_err(|e| format!("Failed to get public IP: {}", e))?;
-        let gossip_addr = SocketAddr::new(my_ip, 65509);
-        let node_config = NodeConfig {
-            gossip_addr ,
-            port_range: (65510,65530),
-            bind_ip_addr: my_ip,
-            public_tpu_addr: None,
-            public_tpu_forwards_addr: None,
-            num_tvu_sockets: NonZeroUsize::new(1).unwrap(),
-            num_quic_endpoints: NonZeroUsize::new(1).unwrap(),
-        };
-
-        let mut node = Node::new_with_external_ip(&keypair.pubkey(), node_config);
-        let mut cluster_info = ClusterInfo::new(
-            node.info.clone(),
-            keypair.clone(),
-            SocketAddrSpace::Global,
-        );
-        cluster_info.set_contact_debug_interval(10_000);
-        cluster_info.set_entrypoints(cluster_entrypoints);
-
-        let cluster_info = Arc::new(cluster_info);
-        let gossip_service = GossipService::new(
-            &cluster_info,
-            None,
-            node.sockets.gossip,
-            None,
-            false,
-            None,
-            exit.clone(),
-        );
-
-        self.gossip_service = Some(gossip_service);
-        self.cluster_info = Some(cluster_info);
-
-        Ok(())
-    }
-
-    pub fn lookup_my_info(&self) -> ContactInfo {
-        let cluster_info = Arc::clone(self.cluster_info.as_ref().unwrap());
-        cluster_info.my_contact_info()
-    }
-
-    pub fn lookup_info(&self, pubkey: &Pubkey) -> Option<ContactInfo> {
-        let cluster_info = Arc::clone(self.cluster_info.as_ref().unwrap());
-        cluster_info.lookup_contact_info(pubkey, |x|x.clone())
     }
 
     pub fn start_refresh_thread(&mut self, refresh_interval: u64, stale_threshold: u64) -> Result<(), Box<dyn std::error::Error>> {
-        if self.cluster_info.is_none() {
-            return Err("Gossip not initialized. Call initialize_gossip first.".into());
-        }
-
         let repair_peers = Arc::clone(&self.repair_peers);
         let exit = Arc::clone(&self.exit);
-        let cluster_info = Arc::clone(self.cluster_info.as_ref().unwrap());
+        let cluster_info = self.gossip_manager.get_cluster_info()
+            .ok_or("Cluster info not initialized")?;
 
         let thread = thread::spawn(move || {
             refresh_repair_peers(refresh_interval, stale_threshold, repair_peers, exit, cluster_info);
@@ -121,10 +52,6 @@ impl RepairPeersManager {
 
         if let Some(thread) = self.refresh_thread.take() {
             thread.join().map_err(|_| "Failed to join refresh thread")?;
-        }
-
-        if let Some(gossip_service) = self.gossip_service.take() {
-            gossip_service.join().map_err(|_| "Failed to join gossip service")?;
         }
 
         Ok(())
@@ -191,5 +118,11 @@ fn refresh_repair_peers(
             std::thread::sleep(Duration::from_secs(sleep_chunk));
             remaining_sleep -= sleep_chunk;
         }
+    }
+}
+
+impl<'a> Drop for RepairPeersManager<'a> {
+    fn drop(&mut self) {
+        let _ = self.stop();
     }
 }
