@@ -86,7 +86,8 @@ impl TurbineManager {
                 // dequeue / yield / spin
                 if let Some(packet_vec) = cons.dequeue() {
                     let shred = Shred::new_from_serialized_shred(packet_vec).unwrap();
-                    println!("Shred | slot:{} type:{:?}", shred.slot(), shred.shred_type());
+                    println!("Shred | id:{:?}",
+                             shred.id());
                 } else {
                     // spin
                     // std::thread::yield_now();
