@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
-use solana_gossip::cluster_info::ClusterInfo;
+use solana_gossip::cluster_info::{ClusterInfo, Node, NodeConfig};
 use solana_gossip::contact_info::{ContactInfo, Protocol};
 use solana_gossip::gossip_service::{make_gossip_node, GossipService};
-use solana_net_utils::get_public_ip_addr;
+use solana_net_utils::{get_public_ip_addr, PortRange};
 use solana_sdk::pubkey;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
+use solana_sdk::signer::Signer;
 use solana_streamer::socket::SocketAddrSpace;
 
 struct RepairPeerInfo {
@@ -38,27 +40,51 @@ impl RepairPeersManager {
     }
 
     pub fn initialize_gossip(&mut self, entrypoint: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let keypair = Keypair::new();
+        let keypair = Arc::new(Keypair::new());
         let exit = Arc::clone(&self.exit);
 
-        let entry_addrs: Vec<_> = entrypoint.to_socket_addrs().unwrap().collect();
-        let gossip_entry = entry_addrs.first().ok_or("Failed to resolve entrypoint")?;
+        let entrypoint_addrs: Vec<_> = entrypoint.to_socket_addrs().unwrap().collect();
+        let cluster_entrypoints = entrypoint_addrs
+            .iter()
+            .map(ContactInfo::new_gossip_entry_point)
+            .collect::<Vec<_>>();
+
+        let gossip_entry = entrypoint_addrs.first().ok_or("Failed to resolve entrypoint")?;
 
         let my_ip = get_public_ip_addr(gossip_entry).map_err(|e| format!("Failed to get public IP: {}", e))?;
-        let socket = SocketAddr::new(my_ip, 65515);
+        let gossip_addr = SocketAddr::new(my_ip, 65509);
+        let node_config = NodeConfig {
+            gossip_addr ,
+            port_range: (65510,65530),
+            bind_ip_addr: my_ip,
+            public_tpu_addr: None,
+            public_tpu_forwards_addr: None,
+            num_tvu_sockets: NonZeroUsize::new(1).unwrap(),
+            num_quic_endpoints: NonZeroUsize::new(1).unwrap(),
+        };
 
-        let (gossip_service, _, cluster_info) = make_gossip_node(
-            keypair,
-            Some(gossip_entry),
-            exit.clone(),
-            Some(&socket),
-            0,
+        let mut node = Node::new_with_external_ip(&keypair.pubkey(), node_config);
+        let mut cluster_info = ClusterInfo::new(
+            node.info.clone(),
+            keypair.clone(),
+            SocketAddrSpace::Global,
+        );
+        cluster_info.set_contact_debug_interval(10_000);
+        cluster_info.set_entrypoints(cluster_entrypoints);
+
+        let cluster_info = Arc::new(cluster_info);
+        let gossip_service = GossipService::new(
+            &cluster_info,
+            None,
+            node.sockets.gossip,
+            None,
             false,
-            SocketAddrSpace::Global);
+            None,
+            exit.clone(),
+        );
 
         self.gossip_service = Some(gossip_service);
         self.cluster_info = Some(cluster_info);
-
 
         Ok(())
     }

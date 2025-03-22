@@ -2,7 +2,7 @@ use std::{env, process};
 use std::time::{Duration};
 use solana_gossip::contact_info::Protocol;
 use solana_sdk::pubkey;
-use clock_repeater::repair_peers::RepairPeersManager;
+use overcast::repair_peers::RepairPeersManager;
 
 pub fn debug_repair_peers(entrypoint: &str, timeout: u64) {
     let mut manager = RepairPeersManager::new();
