@@ -3150,6 +3150,7 @@ dependencies = [
  "crossbeam-channel",
  "heapless",
  "libc",
+ "rayon",
  "serde",
  "serde_json",
  "signal-hook",

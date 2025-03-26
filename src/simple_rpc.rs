@@ -5,8 +5,9 @@ use tokio::runtime::Runtime;
 use std::thread;
 use std::net::SocketAddr;
 use base64::{Engine as _, engine::general_purpose};
-
-use crate::shred_store::ShredStore;
+use solana_ledger::shred::{ReedSolomonCache, Shred, Shredder};
+use crate::storage::shred_store::ShredStore;
+use rayon::prelude::*;
 
 #[derive(Deserialize)]
 struct SlotShredRequest {
@@ -27,9 +28,7 @@ struct MaxSlotResponse {
 #[derive(Serialize)]
 struct ShredResponse {
     slot: u64,
-    shred_index: u32,
     data: String,
-    length: usize,
 }
 
 #[derive(Serialize)]
@@ -129,17 +128,15 @@ async fn handle_slot_shred(
 ) -> Result<impl Reply, Rejection> {
     let slot = query.slot;
     let shred_index = query.shred_index;
-
-    match store.get_shred_num(slot, shred_index) {
+    let shreds = store.get_shred_num(slot, shred_index);
+    match shreds.0 {
         Some((length, data)) => {
             // Base64 encode the shred data for transmission
             let encoded = general_purpose::STANDARD.encode(&data[0..length]);
 
             let response = ShredResponse {
                 slot,
-                shred_index,
                 data: encoded,
-                length,
             };
 
             Ok(warp::reply::json(&response))
@@ -161,7 +158,7 @@ async fn handle_all_shreds(
     let slot = query.slot;
     let max_slot = store.max_slot();
 
-    if slot > max_slot || slot < max_slot.saturating_sub(crate::shred_store::CAPACITY as u64) {
+    if slot > max_slot || slot < max_slot.saturating_sub(crate::storage::shred_store::CAPACITY as u64) {
         let response = ErrorResponse {
             error: format!("Slot {} not in valid range (max_slot={})", slot, max_slot),
         };
@@ -170,19 +167,16 @@ async fn handle_all_shreds(
     }
 
     let mut shreds = Vec::new();
+    let stored_shreds = store.get_slot_shreds(slot);
 
-    for index in 0..1000 {
-        if let Some((length, data)) = store.get_shred_num(slot, index) {
-            let encoded = general_purpose::STANDARD.encode(&data[0..length]);
-
-            shreds.push(ShredResponse {
-                slot,
-                shred_index: index,
-                data: encoded,
-                length,
-            });
-        }
+    for shred_info in stored_shreds {
+        let encoded = general_purpose::STANDARD.encode(&shred_info.1[0..shred_info.0]);
+        shreds.push(ShredResponse {
+            slot,
+            data: encoded,
+        });
     }
+
 
     if shreds.is_empty() {
         let response = ErrorResponse {

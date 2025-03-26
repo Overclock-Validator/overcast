@@ -8,11 +8,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender};
 use libc;
-use heapless::spsc::Queue;
-use solana_ledger::shred::Shred;
 use solana_sdk::packet;
 use crate::queues::PACKET_QUEUE;
-use crate::types::ShredType;
+use crate::types::ShredInfo;
 
 
 const BUFFER_SIZE: usize = packet::PACKET_DATA_SIZE;
@@ -34,7 +32,7 @@ impl TurbineManager {
         })
     }
 
-    pub fn run(&mut self, storage_sender: Sender<ShredType>) -> &mut Self {
+    pub fn run(&mut self, storage_sender: Sender<ShredInfo>) -> &mut Self {
         let (mut prod, mut cons) = unsafe { PACKET_QUEUE.split() };
         let socket = self.socket.try_clone().expect("Failed to clone socket");
         let running = self.running.clone();

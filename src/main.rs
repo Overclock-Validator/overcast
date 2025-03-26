@@ -6,15 +6,12 @@ use std::time::Duration;
 use solana_gossip::contact_info::Protocol;
 use signal_hook::{consts::SIGINT, flag};
 
-mod gossip;
-mod repair_manager;
-
-use gossip::GossipManager;
+use overcast::gossip::GossipManager;
 use overcast::queues::get_storage_queue;
-use overcast::shred_store::ShredStore;
+use overcast::storage::shred_store::ShredStore;
 use overcast::simple_rpc::SimpleRpcServer;
 use overcast::turbine_manager::TurbineManager;
-use repair_manager::RepairPeersManager;
+use overcast::repair::repair_manager::RepairPeersManager;
 
 pub fn debug_repair_peers(entrypoint: &str, timeout: u64) {
     let mut gossip_manager = GossipManager::new();
@@ -49,8 +46,8 @@ fn main() {
     let my_tvu_addr =  my_contact_info.tvu(Protocol::UDP).unwrap();
     println!("me: {:?}", my_tvu_addr);
 
-    let mut manager = TurbineManager::new(my_tvu_addr).unwrap();
-    manager.run(store_send);
+    let mut turbine_manager = TurbineManager::new(my_tvu_addr).unwrap();
+    turbine_manager.run(store_send);
 
     let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
     let mut rpc_server = SimpleRpcServer::new(store.clone());

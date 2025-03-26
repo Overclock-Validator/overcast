@@ -3,28 +3,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use solana_sdk::packet;
 use ahash::AHashMap;
 use crossbeam_channel::Receiver;
-use solana_ledger::shred::{Shred};
-use crate::types::ShredType;
+use solana_ledger::shred::{Shred, ShredType};
+use crate::types::ShredInfo;
 
 pub(crate) const CAPACITY: usize = 1 << 12;
 const SHRED_SIZE: usize = packet::PACKET_DATA_SIZE;
 
-pub type SlotMap = AHashMap<u32, ShredType>;
-
+pub type SlotMap = AHashMap<u32, ShredInfo>;
 #[derive(Clone)]
 pub struct ShredStore {
-    slots: Arc<Box<[RwLock<(u64, SlotMap)>; CAPACITY]>>,
+    slots: Arc<Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]>>,
     max_slot: Arc<AtomicU64>,
 }
 
 impl ShredStore {
-    pub fn new(rx: Receiver<ShredType>) -> Self {
+    pub fn new(rx: Receiver<ShredInfo>) -> Self {
         let mut slots_vec = Vec::with_capacity(CAPACITY);
         for _ in 0..CAPACITY {
-            slots_vec.push(RwLock::new((0u64, AHashMap::new())));
+            slots_vec.push(RwLock::new((0u64, (AHashMap::new(), AHashMap::new()))));
         }
 
-        let slots_array: Box<[RwLock<(u64, SlotMap)>; CAPACITY]> =
+        let slots_array: Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]> =
             slots_vec.into_boxed_slice().try_into().unwrap_or_else(|_| panic!("Failed to create slots array"));
 
         let slots = Arc::new(slots_array);
@@ -50,7 +49,8 @@ impl ShredStore {
                         slot,
                         index,
                         shred.1,
-                        shred.0
+                        shred.0,
+                        deser_shred.shred_type()
                     ) {
                         eprintln!("Error storing shred for slot {}: {:?}", slot, e);
                     }
@@ -62,12 +62,13 @@ impl ShredStore {
     }
 
     fn store_shred_internal(
-        slots: &Arc<Box<[RwLock<(u64, SlotMap)>; CAPACITY]>>,
+        slots: &Arc<Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]>>,
         max_slot: &Arc<AtomicU64>,
         slot: u64,
         shred_index: u32,
         shred: [u8; SHRED_SIZE],
-        shred_len: usize
+        shred_len: usize,
+        shred_type: ShredType,
     ) -> anyhow::Result<()> {
         let index = (slot % (CAPACITY as u64)) as usize;
 
@@ -75,12 +76,18 @@ impl ShredStore {
         let mut slot_entry = slots[index].write().unwrap();
         let stored_slot_num = slot_entry.0;
 
-        if slot > stored_slot_num {
-            slot_entry.1 = AHashMap::new();
-            slot_entry.0 = slot;
-            slot_entry.1.insert(shred_index, (shred_len, shred));
-        } else if slot == stored_slot_num {
-            slot_entry.1.insert(shred_index, (shred_len, shred));
+        if slot >= stored_slot_num {
+            // If it's a strictly newer slot, reset the stored shreds and update the slot number
+            if slot > stored_slot_num {
+                slot_entry.1 = (AHashMap::new(), AHashMap::new());
+                slot_entry.0 = slot;
+            }
+
+            let target_map = match shred_type {
+                ShredType::Data => &mut slot_entry.1.0,
+                ShredType::Code => &mut slot_entry.1.1,
+            };
+            target_map.insert(shred_index, (shred_len, shred));
         }
 
         drop(slot_entry);
@@ -91,24 +98,20 @@ impl ShredStore {
             max_slot.store(slot, Ordering::Relaxed);
         }
 
-        // let x = Self::get_shred_internal(slots, max_slot, slot, shred_index);
-        // println!("DEBUG: After storing - slot={}, index={}, exists={}",
-        //          slot, shred_index, x.is_some());
-
         Ok(())
     }
 
     fn get_shred_internal(
-        slots: &Arc<Box<[RwLock<(u64, SlotMap)>; CAPACITY]>>,
+        slots: &Arc<Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]>>,
         max_slot: &Arc<AtomicU64>,
         slot_num: u64,
         shred_num: u32
-    ) -> Option<ShredType> {
+    ) -> (Option<ShredInfo>, Option<ShredInfo>) {
         let max_slot_value = max_slot.load(Ordering::Relaxed);
 
         if slot_num > max_slot_value || slot_num < max_slot_value.saturating_sub(CAPACITY as u64) {
             println!("DEBUG: Slot {} not in range (max_slot={})", slot_num, max_slot_value);
-            return None;
+            return (None,None);
         }
 
         let index = (slot_num % (CAPACITY as u64)) as usize;
@@ -118,16 +121,45 @@ impl ShredStore {
         if slot_entry.0 == slot_num {
             // println!("DEBUG: Found slot {} in index {}, checking for shred {}",
             //          slot_num, index, shred_num);
-            slot_entry.1.get(&shred_num).cloned()
+            (slot_entry.1.0.get(&shred_num).cloned(), slot_entry.1.1.get(&shred_num).cloned() )
         } else {
             // println!("DEBUG: Slot mismatch at index {}: expected {}, found {}",
             //          index, slot_num, slot_entry.0);
-            None
+            (None, None)
         }
     }
 
-    pub fn get_shred_num(&self, slot_num: u64, shred_num: u32) -> Option<ShredType> {
+    pub fn get_shred_num(&self, slot_num: u64, shred_num: u32) -> (Option<ShredInfo>, Option<ShredInfo>) {
         Self::get_shred_internal(&self.slots, &self.max_slot, slot_num, shred_num)
+    }
+
+    pub fn get_slot_shreds(&self, slot_num: u64) -> Vec<ShredInfo> {
+        let max_slot_value = self.max_slot.load(Ordering::Relaxed);
+
+        if slot_num > max_slot_value || slot_num < max_slot_value.saturating_sub(CAPACITY as u64) {
+            return Vec::new();
+        }
+
+        let index = (slot_num % (CAPACITY as u64)) as usize;
+        let slot_entry = self.slots[index].read().unwrap();
+
+        // Check if the slot at this index is the one we're looking for
+        if slot_entry.0 != slot_num {
+            return Vec::new();
+        }
+
+        let mut result: Vec<ShredInfo> = slot_entry.1.0
+            .iter()
+            .map(|(_index, shred_data)| shred_data.clone())
+            .collect();
+
+        // Append coding shreds
+        result.extend(
+            slot_entry.1.1
+                .iter()
+                .map(|(_index, shred_code)| shred_code.clone())
+        );
+        result
     }
 
     pub fn max_slot(&self) -> u64 {
@@ -186,8 +218,8 @@ mod tests {
         println!("\nTEST: Retrieving shred at slot={}, index={}", slot, shred_index);
         let retrieved = store.get_shred_num(slot, shred_index);
 
-        assert!(retrieved.is_some(), "Expected shred not found in slot {}", slot);
-        let (ret_len, ret_shred) = retrieved.unwrap();
+        assert!(retrieved.0.is_some(), "Expected shred not found in slot {}", slot);
+        let (ret_len, ret_shred) = retrieved.0.unwrap();
         assert_eq!(ret_len, shred_len);
         assert_eq!(ret_shred, shred_bytes);
     }
@@ -211,11 +243,11 @@ mod tests {
         let retrieved1 = store.get_shred_num(slot, 10);
         let retrieved2 = store.get_shred_num(slot, 20);
 
-        assert!(retrieved1.is_some(), "Shred with index 10 not found");
-        assert!(retrieved2.is_some(), "Shred with index 20 not found");
+        assert!(retrieved1.0.is_some(), "Shred with index 10 not found");
+        assert!(retrieved2.0.is_some(), "Shred with index 20 not found");
 
-        let (ret_len1, ret_shred1) = retrieved1.unwrap();
-        let (ret_len2, ret_shred2) = retrieved2.unwrap();
+        let (ret_len1, ret_shred1) = retrieved1.0.unwrap();
+        let (ret_len2, ret_shred2) = retrieved2.0.unwrap();
 
         assert_eq!(ret_len1, shred_len1);
         assert_eq!(ret_shred1, shred_bytes1);
@@ -252,7 +284,7 @@ mod tests {
         let retrieved_new = store.get_shred_num(slot_new, shred_index_new);
         let retrieved_old = store.get_shred_num(slot_old, shred_index_old);
 
-        assert!(retrieved_new.is_some(), "Newer shred not found");
-        assert!(retrieved_old.is_some(), "Older shred not found");
+        assert!(retrieved_new.0.is_some(), "Newer shred not found");
+        assert!(retrieved_old.0.is_some(), "Older shred not found");
     }
 }

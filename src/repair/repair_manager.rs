@@ -6,8 +6,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use solana_gossip::cluster_info::ClusterInfo;
-use solana_gossip::contact_info::{ContactInfo, Protocol};
-use solana_sdk::pubkey::Pubkey;
+use solana_gossip::contact_info::{Protocol};
 
 use crate::gossip::GossipManager;
 
