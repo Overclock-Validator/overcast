@@ -1,41 +1,24 @@
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
-use solana_sdk::packet;
 use ahash::AHashMap;
 use crossbeam_channel::Receiver;
 use solana_ledger::shred::{Shred, ShredType};
-use crate::types::ShredInfo;
-
-pub(crate) const CAPACITY: usize = 1 << 12;
-const SHRED_SIZE: usize = packet::PACKET_DATA_SIZE;
+use crate::types::{ShredInfo, CAPACITY, SHRED_SIZE, RingSlotStore};
 
 pub type SlotMap = AHashMap<u32, ShredInfo>;
+pub type SlotInfo = (AtomicU64, (RwLock<SlotMap>, RwLock<SlotMap>));
+
 #[derive(Clone)]
 pub struct ShredStore {
-    slots: Arc<Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]>>,
-    max_slot: Arc<AtomicU64>,
+    inner: Arc<RingSlotStore<SlotInfo>>
 }
 
 impl ShredStore {
     pub fn new(rx: Receiver<ShredInfo>) -> Self {
-        let mut slots_vec = Vec::with_capacity(CAPACITY);
-        for _ in 0..CAPACITY {
-            slots_vec.push(RwLock::new((0u64, (AHashMap::new(), AHashMap::new()))));
-        }
+        let ring_slot_store = RingSlotStore::<SlotInfo>::new();
+        let shred_store = ShredStore{inner:Arc::new(ring_slot_store)};
 
-        let slots_array: Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]> =
-            slots_vec.into_boxed_slice().try_into().unwrap_or_else(|_| panic!("Failed to create slots array"));
-
-        let slots = Arc::new(slots_array);
-        let max_slot = Arc::new(AtomicU64::new(0));
-
-        let store = Self {
-            slots: slots.clone(),
-            max_slot: max_slot.clone(),
-        };
-
-        let thread_slots = slots.clone();
-        let thread_max_slot = max_slot.clone();
+        let shred_store_clone = shred_store.clone();
 
         std::thread::spawn(move || {
             while let Ok(shred) = rx.recv() {
@@ -44,8 +27,7 @@ impl ShredStore {
                     let index = deser_shred.index();
 
                     if let Err(e) = Self::store_shred_internal(
-                        &thread_slots,
-                        &thread_max_slot,
+                        &shred_store_clone,
                         slot,
                         index,
                         shred.1,
@@ -58,70 +40,91 @@ impl ShredStore {
             }
         });
 
-        store
+        shred_store
     }
 
     fn store_shred_internal(
-        slots: &Arc<Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]>>,
-        max_slot: &Arc<AtomicU64>,
+        &self,
         slot: u64,
         shred_index: u32,
         shred: [u8; SHRED_SIZE],
         shred_len: usize,
         shred_type: ShredType,
     ) -> anyhow::Result<()> {
-        let index = (slot % (CAPACITY as u64)) as usize;
-
-        // lock the specific slot
-        let mut slot_entry = slots[index].write().unwrap();
-        let stored_slot_num = slot_entry.0;
+        let slot_entry = self.inner.get_unchecked(slot);
+        let stored_slot_num = slot_entry.0.load(Ordering::Acquire);
 
         if slot >= stored_slot_num {
-            // If it's a strictly newer slot, reset the stored shreds and update the slot number
             if slot > stored_slot_num {
-                slot_entry.1 = (AHashMap::new(), AHashMap::new());
-                slot_entry.0 = slot;
+                // Don't use ? for write() - handle the Result explicitly
+                match slot_entry.1.0.write() {
+                    Ok(mut data_shred_store) => {
+                        data_shred_store.clear();
+                        // Guard is dropped here automatically
+                    },
+                    Err(e) => return Err(anyhow::anyhow!("Failed to acquire data write lock: {}", e)),
+                }
+
+                match slot_entry.1.1.write() {
+                    Ok(mut coding_shred_store) => {
+                        coding_shred_store.clear();
+                        // Guard is dropped here automatically
+                    },
+                    Err(e) => return Err(anyhow::anyhow!("Failed to acquire coding write lock: {}", e)),
+                }
+
+                slot_entry.0.store(slot, Ordering::Release);
             }
 
-            let target_map = match shred_type {
-                ShredType::Data => &mut slot_entry.1.0,
-                ShredType::Code => &mut slot_entry.1.1,
-            };
-            target_map.insert(shred_index, (shred_len, shred));
+            // Handle shred insertion similarly
+            match shred_type {
+                ShredType::Data => {
+                    match slot_entry.1.0.write() {
+                        Ok(mut data_map) => {
+                            data_map.insert(shred_index, (shred_len, shred));
+                        },
+                        Err(e) => return Err(anyhow::anyhow!("Failed to acquire data write lock for insertion: {}", e)),
+                    }
+                },
+                ShredType::Code => {
+                    match slot_entry.1.1.write() {
+                        Ok(mut code_map) => {
+                            code_map.insert(shred_index, (shred_len, shred));
+                        },
+                        Err(e) => return Err(anyhow::anyhow!("Failed to acquire coding write lock for insertion: {}", e)),
+                    }
+                },
+            }
         }
 
-        drop(slot_entry);
-
-        // atomic update for max slot
-        let current_max = max_slot.load(Ordering::Relaxed);
+        let current_max = self.inner.max_slot();
         if slot > current_max {
-            max_slot.store(slot, Ordering::Relaxed);
+            self.inner.update_max_slot(slot)
         }
 
         Ok(())
     }
 
     fn get_shred_internal(
-        slots: &Arc<Box<[RwLock<(u64, (SlotMap, SlotMap))>; CAPACITY]>>,
-        max_slot: &Arc<AtomicU64>,
+        &self,
         slot_num: u64,
         shred_num: u32
     ) -> (Option<ShredInfo>, Option<ShredInfo>) {
-        let max_slot_value = max_slot.load(Ordering::Relaxed);
+        let max_slot_value = self.inner.max_slot();
 
         if slot_num > max_slot_value || slot_num < max_slot_value.saturating_sub(CAPACITY as u64) {
             println!("DEBUG: Slot {} not in range (max_slot={})", slot_num, max_slot_value);
             return (None,None);
         }
 
-        let index = (slot_num % (CAPACITY as u64)) as usize;
+        let slot_entry = self.inner.get_unchecked(slot_num);
 
-        let slot_entry = slots[index].read().unwrap();
-
-        if slot_entry.0 == slot_num {
+        if slot_entry.0.load(Ordering::Relaxed) == slot_num {
             // println!("DEBUG: Found slot {} in index {}, checking for shred {}",
             //          slot_num, index, shred_num);
-            (slot_entry.1.0.get(&shred_num).cloned(), slot_entry.1.1.get(&shred_num).cloned() )
+            let data_map = slot_entry.1.0.read().unwrap();
+            let code_map = slot_entry.1.1.read().unwrap();
+            (data_map.get(&shred_num).cloned(), code_map.get(&shred_num).cloned() )
         } else {
             // println!("DEBUG: Slot mismatch at index {}: expected {}, found {}",
             //          index, slot_num, slot_entry.0);
@@ -130,40 +133,41 @@ impl ShredStore {
     }
 
     pub fn get_shred_num(&self, slot_num: u64, shred_num: u32) -> (Option<ShredInfo>, Option<ShredInfo>) {
-        Self::get_shred_internal(&self.slots, &self.max_slot, slot_num, shred_num)
+        self.get_shred_internal(slot_num, shred_num)
     }
 
     pub fn get_slot_shreds(&self, slot_num: u64) -> Vec<ShredInfo> {
-        let max_slot_value = self.max_slot.load(Ordering::Relaxed);
+        let max_slot_value = self.inner.max_slot();
 
         if slot_num > max_slot_value || slot_num < max_slot_value.saturating_sub(CAPACITY as u64) {
             return Vec::new();
         }
 
-        let index = (slot_num % (CAPACITY as u64)) as usize;
-        let slot_entry = self.slots[index].read().unwrap();
+        let slot_entry = self.inner.get_unchecked(slot_num);
 
-        // Check if the slot at this index is the one we're looking for
-        if slot_entry.0 != slot_num {
+        if slot_entry.0.load(Ordering::Relaxed) != slot_num {
             return Vec::new();
         }
 
-        let mut result: Vec<ShredInfo> = slot_entry.1.0
-            .iter()
-            .map(|(_index, shred_data)| shred_data.clone())
+        let data_map = slot_entry.1.0.read().unwrap();
+        let code_map = slot_entry.1.1.read().unwrap();
+
+        let mut result: Vec<ShredInfo> = data_map
+            .values()
+            .cloned()
             .collect();
 
-        // Append coding shreds
         result.extend(
-            slot_entry.1.1
-                .iter()
-                .map(|(_index, shred_code)| shred_code.clone())
+            code_map
+                .values()
+                .cloned()
         );
+
         result
     }
 
     pub fn max_slot(&self) -> u64 {
-        self.max_slot.load(Ordering::Relaxed)
+        self.inner.max_slot()
     }
 }
 

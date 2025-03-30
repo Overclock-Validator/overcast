@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose};
 use solana_ledger::shred::{ReedSolomonCache, Shred, Shredder};
 use crate::storage::shred_store::ShredStore;
 use rayon::prelude::*;
+use crate::types::CAPACITY;
 
 #[derive(Deserialize)]
 struct SlotShredRequest {
@@ -158,7 +159,7 @@ async fn handle_all_shreds(
     let slot = query.slot;
     let max_slot = store.max_slot();
 
-    if slot > max_slot || slot < max_slot.saturating_sub(crate::storage::shred_store::CAPACITY as u64) {
+    if slot > max_slot || slot < max_slot.saturating_sub(CAPACITY as u64) {
         let response = ErrorResponse {
             error: format!("Slot {} not in valid range (max_slot={})", slot, max_slot),
         };
