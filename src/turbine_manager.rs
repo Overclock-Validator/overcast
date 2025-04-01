@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Sender};
 use libc;
 use solana_sdk::packet;
-use crate::queues::{PACKET_QUEUE, REPAIR_MONITOR_QUEUE};
+use crate::queues::{PACKET_QUEUE};
 use crate::types::ShredInfo;
 
 
@@ -32,9 +32,8 @@ impl TurbineManager {
         })
     }
 
-    pub fn run(&mut self, storage_sender: Sender<ShredInfo>) -> &mut Self {
+    pub fn run(&mut self, storage_sender: Sender<ShredInfo>, repair_monitor_prod: Sender<ShredInfo>) -> &mut Self {
         let (mut prod, mut cons) = unsafe { PACKET_QUEUE.split() };
-        let (mut repair_monitor_prod, _) = unsafe { REPAIR_MONITOR_QUEUE.split() };
         let socket = self.socket.try_clone().expect("Failed to clone socket");
         let running = self.running.clone();
 
@@ -116,9 +115,8 @@ impl TurbineManager {
                     if let Err(e) = storage_sender.send(packet) {
                         eprintln!("Error sending to storage: {:?}",e);
                     }
-                    while repair_monitor_prod.enqueue(packet).is_err() {
-                        // spin
-                        // std::thread::yield_now();
+                    if let Err(e) = repair_monitor_prod.send(packet) {
+                        eprintln!("Error sending to repair manager: {:?}",e);
                     }
 
                 } else {

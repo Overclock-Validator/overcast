@@ -7,7 +7,7 @@ use solana_gossip::contact_info::Protocol;
 use signal_hook::{consts::SIGINT, flag};
 
 use overcast::gossip::GossipManager;
-use overcast::queues::get_storage_queue;
+use overcast::queues::{get_repair_queue, get_storage_queue};
 use overcast::storage::shred_store::ShredStore;
 use overcast::simple_rpc::SimpleRpcServer;
 use overcast::turbine_manager::TurbineManager;
@@ -30,7 +30,7 @@ fn main() {
         eprintln!("Usage: {} <gossip_entrypoint>", args[0]);
         process::exit(1);
     }
-
+    let (repair_monitor_prod, repair_monitor_cons) = get_repair_queue();
     let gossip_entrypoint = &args[1];
     // debug_repair_peers(gossip_entrypoint, 60);
 
@@ -47,10 +47,10 @@ fn main() {
     let my_tvu_addr =  my_contact_info.tvu(Protocol::UDP).unwrap();
     println!("me: {:?}", my_tvu_addr);
 
-    let meta_store = SlotMetaStore::new();
+    let meta_store = SlotMetaStore::new(repair_monitor_cons);
 
     let mut turbine_manager = TurbineManager::new(my_tvu_addr).unwrap();
-    turbine_manager.run(store_send);
+    turbine_manager.run(store_send, repair_monitor_prod);
 
     let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
     let mut rpc_server = SimpleRpcServer::new(store.clone(), meta_store.clone());

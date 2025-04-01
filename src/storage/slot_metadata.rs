@@ -1,11 +1,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LockResult, RwLock};
+use std::sync::{Arc, RwLock};
 use ahash::{AHashMap, AHashSet};
 use crossbeam_channel::Receiver;
 use solana_ledger::shred::{Shred, ShredType};
-use solana_ledger::shred::ShredType::Code;
-use crate::types::{RingSlotStore, ShredInfo, SHRED_SIZE};
-use crate::queues::REPAIR_MONITOR_QUEUE;
+use crate::types::{RingSlotStore, ShredInfo};
 
 pub type FecIndex = u32;
 pub type Index = u32;
@@ -36,9 +34,7 @@ pub struct SlotMetaStore {
 }
 
 impl SlotMetaStore {
-    pub fn new() -> Self {
-
-        let (_, mut repair_monitor_cons) = unsafe { REPAIR_MONITOR_QUEUE.split() };
+    pub fn new(repair_monitor_cons: Receiver<ShredInfo>) -> Self {
 
         let ring_slot_store = RingSlotStore::<SlotMetadata>::new();
         let meta_store = SlotMetaStore{inner: Arc::new(ring_slot_store)};
@@ -46,7 +42,7 @@ impl SlotMetaStore {
         let meta_store_clone = meta_store.clone();
 
         std::thread::spawn(move || {
-            while let Some(shred) = repair_monitor_cons.dequeue() {
+            while let Ok(shred) = repair_monitor_cons.recv() {
                 if let Ok(deser_shred) = Shred::new_from_serialized_shred(shred.1[0..shred.0].to_vec()) {
                     if let Err(e) = Self::store_shred_meta(
                         &meta_store_clone,
@@ -72,7 +68,7 @@ impl SlotMetaStore {
         let slot_entry = self.inner.get_unchecked(slot);
         let stored_slot_num = slot_entry.slot_num.load(Ordering::Acquire);
 
-        if shred_type == Code {
+        if shred_type == ShredType::Code {
             match slot_entry.fec_meta.write() {
                 Ok(mut fec_map) => {
                     if !fec_map.contains_key(&fec_index) {
