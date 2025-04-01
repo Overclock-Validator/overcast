@@ -12,6 +12,7 @@ use overcast::storage::shred_store::ShredStore;
 use overcast::simple_rpc::SimpleRpcServer;
 use overcast::turbine_manager::TurbineManager;
 use overcast::repair::repair_manager::RepairPeersManager;
+use overcast::storage::slot_metadata::SlotMetaStore;
 
 pub fn debug_repair_peers(entrypoint: &str, timeout: u64) {
     let mut gossip_manager = GossipManager::new();
@@ -46,11 +47,13 @@ fn main() {
     let my_tvu_addr =  my_contact_info.tvu(Protocol::UDP).unwrap();
     println!("me: {:?}", my_tvu_addr);
 
+    let meta_store = SlotMetaStore::new();
+
     let mut turbine_manager = TurbineManager::new(my_tvu_addr).unwrap();
     turbine_manager.run(store_send);
 
     let rpc_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
-    let mut rpc_server = SimpleRpcServer::new(store.clone());
+    let mut rpc_server = SimpleRpcServer::new(store.clone(), meta_store.clone());
     rpc_server.start(rpc_addr).unwrap();
 
     let sigint_recv = Arc::new(AtomicBool::new(false));

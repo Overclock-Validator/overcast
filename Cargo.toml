@@ -7,7 +7,7 @@ edition = "2021"
 solana-gossip = "2.2.1"
 solana-sdk = "2.2.1"
 solana-streamer = "2.2.1"
-solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", branch = "overcast-v2.2.1" }
+solana-ledger = { git = "https://github.com/Overclock-Validator/agave.git", rev = "5cb66c1dc49a3e1ddbdaec4875fcac3960f238b6" }
 solana-entry = "2.2.1"
 solana-net-utils = "2.2.1"
 signal-hook = "0.3"

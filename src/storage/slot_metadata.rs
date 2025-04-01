@@ -1,50 +1,58 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
-use ahash::AHashMap;
+use std::sync::{Arc, LockResult, RwLock};
+use ahash::{AHashMap, AHashSet};
 use crossbeam_channel::Receiver;
 use solana_ledger::shred::{Shred, ShredType};
+use solana_ledger::shred::ShredType::Code;
 use crate::types::{RingSlotStore, ShredInfo, SHRED_SIZE};
+use crate::queues::REPAIR_MONITOR_QUEUE;
 
 pub type FecIndex = u32;
 pub type Index = u32;
 pub type FecMap = AHashMap<FecIndex, Vec<Index>>;
+pub type FecInfoMap = AHashMap<FecIndex, FecMeta>;
+
+#[derive(Debug, Default)]
+pub struct FecMeta {
+    pub(crate) num_data_shreds: u16,
+    pub(crate) num_coding_shreds: u16,
+}
 
 #[derive(Debug, Default)]
 pub struct SlotMetadata {
-    slot_num: AtomicU64,
-    fec_data_map: RwLock<FecMap>,
-    fec_coding_map: RwLock<FecMap>,
-    timestamp: AtomicU64,
-    completed: AtomicBool,
+    pub slot_num: AtomicU64,
+    pub fec_data_map: RwLock<FecMap>,
+    pub fec_coding_map: RwLock<FecMap>,
+    pub fec_meta: RwLock<FecInfoMap>,
+    pub timestamp: AtomicU64,
+    pub completed: AtomicBool,
 }
+
+pub type InProgressSlot = AHashSet<u64>;
 
 #[derive(Clone)]
 pub struct SlotMetaStore {
-    inner: Arc<RingSlotStore<SlotMetadata>>
+    pub(crate) inner: Arc<RingSlotStore<SlotMetadata>>
 }
 
 impl SlotMetaStore {
-    pub fn new(rx: Receiver<ShredInfo>) -> Self {
+    pub fn new() -> Self {
+
+        let (_, mut repair_monitor_cons) = unsafe { REPAIR_MONITOR_QUEUE.split() };
+
         let ring_slot_store = RingSlotStore::<SlotMetadata>::new();
         let meta_store = SlotMetaStore{inner: Arc::new(ring_slot_store)};
 
         let meta_store_clone = meta_store.clone();
 
         std::thread::spawn(move || {
-            while let Ok(shred) = rx.recv() {
+            while let Some(shred) = repair_monitor_cons.dequeue() {
                 if let Ok(deser_shred) = Shred::new_from_serialized_shred(shred.1[0..shred.0].to_vec()) {
-                    let slot = deser_shred.slot();
-                    let fec_index = deser_shred.fec_set_index();
-                    let shred_index = deser_shred.index();
-
                     if let Err(e) = Self::store_shred_meta(
                         &meta_store_clone,
-                        slot,
-                        fec_index,
-                        shred_index,
-                        deser_shred.shred_type()
+                        &deser_shred
                     ) {
-                        eprintln!("Error storing shred metadata for slot {}: {:?}", slot, e);
+                        eprintln!("Error storing shred metadata for slot {}: {:?}", deser_shred.slot(), e);
                     }
                 }
             }
@@ -55,13 +63,32 @@ impl SlotMetaStore {
 
     fn store_shred_meta(
         &self,
-        slot: u64,
-        fec_index: u32,
-        shred_index: u32,
-        shred_type: ShredType,
+        deser_shred: &Shred,
     ) -> anyhow::Result<()> {
+        let slot = deser_shred.slot();
+        let fec_index = deser_shred.fec_set_index();
+        let shred_index = deser_shred.index();
+        let shred_type = deser_shred.shred_type();
         let slot_entry = self.inner.get_unchecked(slot);
         let stored_slot_num = slot_entry.slot_num.load(Ordering::Acquire);
+
+        if shred_type == Code {
+            match slot_entry.fec_meta.write() {
+                Ok(mut fec_map) => {
+                    if !fec_map.contains_key(&fec_index) {
+                        if let Shred::ShredCode(coding_shred)  = deser_shred {
+                            let coding_header = coding_shred.coding_header();
+                            fec_map.insert(fec_index, FecMeta {
+                                num_data_shreds: coding_header.num_data_shreds,
+                                num_coding_shreds: coding_header.num_coding_shreds
+                            });
+                        }
+
+                    }
+                }
+                Err(_) => {}
+            }
+        }
 
         if slot >= stored_slot_num {
             if slot > stored_slot_num {
@@ -111,4 +138,5 @@ impl SlotMetaStore {
         Ok(())
     }
 }
+
 

@@ -9,7 +9,7 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender};
 use libc;
 use solana_sdk::packet;
-use crate::queues::PACKET_QUEUE;
+use crate::queues::{PACKET_QUEUE, REPAIR_MONITOR_QUEUE};
 use crate::types::ShredInfo;
 
 
@@ -34,6 +34,7 @@ impl TurbineManager {
 
     pub fn run(&mut self, storage_sender: Sender<ShredInfo>) -> &mut Self {
         let (mut prod, mut cons) = unsafe { PACKET_QUEUE.split() };
+        let (mut repair_monitor_prod, _) = unsafe { REPAIR_MONITOR_QUEUE.split() };
         let socket = self.socket.try_clone().expect("Failed to clone socket");
         let running = self.running.clone();
 
@@ -99,7 +100,7 @@ impl TurbineManager {
                 for i in 0..num_messages {
                     let packet_len = mmsg_hdrs[i].msg_len as usize;
                     // enqueue / yield / spin
-                    while prod.enqueue((packet_len,buffers[i])).is_err() {
+                    while prod.enqueue((packet_len, buffers[i])).is_err() {
                         // spin
                         // std::thread::yield_now();
                     }
@@ -115,6 +116,11 @@ impl TurbineManager {
                     if let Err(e) = storage_sender.send(packet) {
                         eprintln!("Error sending to storage: {:?}",e);
                     }
+                    while repair_monitor_prod.enqueue(packet).is_err() {
+                        // spin
+                        // std::thread::yield_now();
+                    }
+
                 } else {
                     if !processor_running.load(Ordering::SeqCst) {
                         break;
