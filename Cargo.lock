@@ -3165,6 +3165,7 @@ dependencies = [
  "base64 0.21.7",
  "bincode",
  "crossbeam-channel",
+ "dashmap",
  "heapless",
  "libc",
  "rayon",
@@ -3178,6 +3179,8 @@ dependencies = [
  "solana-sdk",
  "solana-streamer",
  "tokio",
+ "tokio-stream",
+ "tokio-util",
  "warp",
 ]
 
@@ -9614,6 +9617,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "pin-project-lite",
+ "slab",
  "tokio",
 ]
 

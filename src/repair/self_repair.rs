@@ -1,3 +1,2 @@
 
-// const DEFER_REPAIR_THRESHOLD: u64 = 200;
-// const REPAIR_REQUEST_TIMEOUT_MS: u64 = 100;
+

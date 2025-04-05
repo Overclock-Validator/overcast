@@ -1,7 +1,7 @@
 use serde::{Serialize, Deserialize};
 use base64::{Engine as _, engine::general_purpose};
 use solana_ledger::shred::{CodingShredHeader, ReedSolomonCache, Shred, ShredType, Shredder};
-use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use ahash::{HashMap, HashMapExt, HashSetExt};
 use solana_entry::entry::Entry;
 use solana_ledger::shred;
 use solana_ledger::shred::ShredType::Data;
@@ -113,14 +113,20 @@ pub mod test {
         let fec_set_map = load_shreds_from_json("src/test_data/slot_shreds.json")
             .expect("Failed to load and parse shreds");
 
-        println!("{:#?}", fec_set_map.keys());
+        let mut fec_indices = fec_set_map.keys().collect::<Vec<&u32>>();
+        fec_indices.sort();
+        println!("{:#?}", fec_indices);
         // Get shreds for FEC set 0
-        let shreds = fec_set_map.get(&74u32).unwrap().clone();
+        let shreds = fec_set_map.get(& 890u32).unwrap().clone();
 
         if let Some(coding_header) = get_coding_header_for_fec_set(&shreds) {
             println!("Coding header: {:?}", coding_header);
             println!("Number of data shreds: {}", coding_header.num_data_shreds);
             println!("Number of coding shreds: {}", coding_header.num_coding_shreds);
+        }
+
+        for s in &shreds {
+            println!("{:?}, {}, {:#?}",s.shred_type(), s.index(), s.last_in_slot());
         }
 
         // Process shreds with recovery and sort by type

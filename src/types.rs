@@ -5,6 +5,10 @@ use solana_sdk::packet;
 pub type ShredInfo = (usize, [u8; packet::PACKET_DATA_SIZE]);
 pub const SHRED_SIZE: usize = packet::PACKET_DATA_SIZE;
 
+// constants from agave code base
+pub const DEFER_REPAIR_THRESHOLD: u64 = 200;
+pub const REPAIR_REQUEST_TIMEOUT_MS: u64 = 100;
+
 pub const CAPACITY: usize = 1 << 12;
 pub struct RingSlotStore<T> {
     store: Box<[T; CAPACITY]>,
