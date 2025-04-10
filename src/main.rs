@@ -13,6 +13,7 @@ use overcast::simple_rpc::SimpleRpcServer;
 use overcast::turbine_manager::TurbineManager;
 use overcast::repair::repair_manager::RepairPeersManager;
 use overcast::storage::slot_metadata::SlotMetaStore;
+use overcast::repair::self_repair::RepairHandler;
 
 pub fn debug_repair_peers(entrypoint: &str, timeout: u64) {
     let mut gossip_manager = GossipManager::new();
@@ -50,6 +51,9 @@ fn main() {
     println!("me: {:?}", my_tvu_addr);
 
     let meta_store = SlotMetaStore::new(metadata_monitor_cons, repair_monitor_prod);
+
+    let repair_handler = RepairHandler::new(meta_store.clone(), repair_monitor_cons, store_send.clone());
+    repair_handler.start();
 
     let mut turbine_manager = TurbineManager::new(my_tvu_addr).unwrap();
     turbine_manager.run(store_send, metadata_monitor_prod);
