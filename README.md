@@ -14,6 +14,7 @@ Overcast simply streams raw shreds; **Mithril (or any other consumer) owns fork�
 * Detect gaps quickly and issue repair requests.  
 * Validate repair responses and re‑assemble blocks.  
 * Serve valid shreds to any peer that asks.
+* Performance optimizations
 
 ### Milestone 2 — Mithril Sidecar Integration *(planned)*
 * Expose a lightweight local API so Mithril can stream blocks directly from the Overcast sidecar.  
