@@ -1,6 +1,7 @@
 # Overcast
 
 Overcast will serve as a **lightweight Solana “edge” node** that caches and republishes *ephemeral* Turbine and repair data so other software can fetch recent blocks without the expense of running a full RPC validator or relying expensive subscription services from more centralized RPC providers to frequently request full blocks.  
+
 By stripping out the Accounts DB, vote engine, and RPC layer, an Overcast instance fits comfortably on the same machine as heavier tools—or on a tiny VPS—while still streaming fresh blocks to local indexers, monitoring agents, or anything else that needs them.
 
 This project is **under active development**. Code and docs will evolve quickly; expect rough edges until we tag the first release.
