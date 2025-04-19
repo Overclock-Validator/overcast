@@ -1,14 +1,23 @@
-### What **Overcast** is (work‑in‑progress)
+# Overcast
 
-Running a full Solana RPC validator just to fetch live blocks can be expensive and operationally heavy—you have to maintain the Accounts DB, voting logic, and terabytes of long‑lived data you may never use. **Overcast** is being built as a lightweight alternative: a “CDN‑style” node that ingests Turbine shreds, keeps only the recent ones, and helps the network heal itself through repair traffic.
+Overcast will serve as a **lightweight Solana “edge” node** that caches and republishes *ephemeral* Turbine and repair data so other software can fetch recent blocks without the expense of running a full RPC validator or relying expensive subscription services from more centralized RPC providers to frequently request full blocks.  
+By stripping out the Accounts DB, vote engine, and RPC layer, an Overcast instance fits comfortably on the same machine as heavier tools—or on a tiny VPS—while still streaming fresh blocks to local indexers, monitoring agents, or anything else that needs them.
 
-Overcast:
+This project is **under active development**. Code and docs will evolve quickly; expect rough edges until we tag the first release.
 
-* Listens for incoming shreds, spots gaps, and issues repair requests.  
-* Processes repair responses and re‑assembles blocks locally.  
-* Serves valid shreds to neighbours that ask.  
-* Maintains a rolling shred cache (retention window is configurable—default is around an hour).
+### Milestone 1 (In progress): Core Turbine / Repair Pipeline
+* Ingest incoming shreds into a rolling cache (default retention ≈ 1 h, but fully configurable).  
+* Detect gaps rapidly and issue repair requests.  
+* Validate repair responses and re‑assemble blocks.  
+* Serve valid shreds to requesting peers.
 
-Because it drops anything outside that window and skips the Accounts DB, vote engine, and RPC layer, Overcast can run on the same machine as heavier applications or on a small VPS, using a fraction of the resources a validator needs. Tools like Mithril, indexers, or monitoring agents can point to a local (or remote) Overcast instance to stream blocks directly without relying on centralized RPC services—yet Overcast remains fully usable as a stand‑alone cache for anyone who just wants fast, low‑footprint access to fresh Solana data.
+### Milestone 2 (Planned): Mithril Integration
+* Expose a simple local API so Mithril can stream live blocks directly from Overcast instead of a centralized RPC.  
+* Support co‑location: run Overcast on the same host as Mithril with minimal extra resource overhead.  
+* Allow optional mesh discovery so a cluster of Overcast nodes can backstop each other for block availability.
 
-> **Status:** Actively under development
+### Milestone 3 (Future): Mesh & Configurability
+* Peer discovery to form regional cache meshes.  
+* Tunable retention policies and hard resource caps.  
+
+
