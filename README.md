@@ -6,8 +6,6 @@ It lets downstream tools pull fresh blocks without the cost of running a full RP
 Because Overcast **drops the Accounts DB, vote engine, and RPC layer**, it’s small enough to run as a *sidecar process*—for example, in the same container/VM/pod as **Mithril**.  
 Overcast simply streams raw shreds; **Mithril (or any other consumer) owns fork‑choice and full block verification.**
 
-> **Status:** under active development.  APIs, config knobs, and docs will shift rapidly until the first tagged release.
-
 ---
 
 ### Milestone 1 — Core Turbine / Repair Pipeline *(in progress)*
