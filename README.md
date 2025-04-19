@@ -1,24 +1,29 @@
 # Overcast
 
-Overcast will serve as a **lightweight Solana “edge” node** that caches and republishes *ephemeral* Turbine and repair data so other software can fetch recent blocks without the expense of running a full RPC validator or relying expensive subscription services from more centralized RPC providers to frequently request full blocks.  
+**Overcast** is a work‑in‑progress, lightweight Solana “edge” node that caches and republishes *ephemeral* Turbine + repair traffic.  
+It lets downstream tools pull fresh blocks without the cost of running a full RPC validator or paying for high‑volume block subscriptions from centralized providers.
 
-By stripping out the Accounts DB, vote engine, and RPC layer, an Overcast instance fits comfortably on the same machine as heavier tools—or on a tiny VPS—while still streaming fresh blocks to local indexers, monitoring agents, or anything else that needs them.
+Because Overcast **drops the Accounts DB, vote engine, and RPC layer**, it’s small enough to run as a *sidecar process*—for example, in the same container/VM/pod as **Mithril**.  
+Overcast simply streams raw shreds; **Mithril (or any other consumer) owns fork‑choice and full block verification.**
 
-This project is **under active development**. Code and docs will evolve quickly; expect rough edges until we tag the first release.
+> **Status:** under active development.  APIs, config knobs, and docs will shift rapidly until the first tagged release.
 
-### Milestone 1 (In progress): Core Turbine / Repair Pipeline
-* Ingest incoming shreds into a rolling cache (default retention ≈ 1 h, but fully configurable).  
-* Detect gaps rapidly and issue repair requests.  
+---
+
+### Milestone 1 — Core Turbine / Repair Pipeline *(in progress)*
+* Ingest incoming shreds into a rolling cache (default retention ≈ 1 h, configurable).  
+* Detect gaps quickly and issue repair requests.  
 * Validate repair responses and re‑assemble blocks.  
-* Serve valid shreds to requesting peers.
+* Serve valid shreds to any peer that asks.
 
-### Milestone 2 (Planned): Mithril Integration
-* Expose a simple local API so Mithril can stream live blocks directly from Overcast instead of a centralized RPC.  
-* Support co‑location: run Overcast on the same host as Mithril with minimal extra resource overhead.  
-* Allow optional mesh discovery so a cluster of Overcast nodes can backstop each other for block availability.
+### Milestone 2 — Mithril Sidecar Integration *(planned)*
+* Expose a lightweight local API so Mithril can stream blocks directly from the Overcast sidecar.  
+* Co‑location: run Overcast + Mithril on one host with minimal extra CPU/RAM/disk.  
+* Optional mesh discovery so multiple Overcast sidecars can backstop block availability for each other.
 
-### Milestone 3 (Future): Mesh & Configurability
+### Milestone 3 — Mesh & Ops Tooling *(future)*
 * Peer discovery to form regional cache meshes.  
 * Tunable retention policies and hard resource caps.  
+
 
 
